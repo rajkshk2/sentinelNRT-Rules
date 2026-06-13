@@ -1,0 +1,60 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/nrt-dvwa-universal-sqli')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/nrt-dvwa-universal-sqli')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "NRT",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "NRT - Universal SQL Injection Attempt",
+                "description": "Detects possible SQL injection attempts in Linux web access syslog records, including DVWA/Apache local6 logs. Broad lab rule covering boolean, UNION, time-based, database enumeration, comment/operator, and file/command SQLi patterns.",
+                "severity": "High",
+                "enabled": true,
+                "query": "Syslog\n| where ProcessName has \"apache_access\" or Facility == \"local6\"\n| extend msg = tolower(SyslogMessage)\n| where msg has_any (\n    \"%27\", \"'\", \"%22\", \"+or+\", \"%20or%20\", \" or \", \"or1\", \"1=1\", \"%3d\",\n    \"union\", \"%20union%20\", \"select\", \"%20select%20\", \"information_schema\",\n    \"sleep(\", \"benchmark(\", \"waitfor\", \"pg_sleep(\",\n    \"xp_cmdshell\", \"load_file\", \"outfile\", \"dumpfile\",\n    \"concat(\", \"group_concat\", \"database()\", \"version()\", \"user()\",\n    \"--\", \"%2d%2d\", \"/*\", \"%2f%2a\", \"%23\"\n)\n| extend SqlInjectionPattern = case(\n    msg has_any (\"%27\", \"'\", \"+or+\", \"%20or%20\", \" or \", \"or1\", \"1=1\", \"%3d\"), \"Boolean-based SQL injection\",\n    msg has_any (\"union\", \"%20union%20\"), \"UNION-based SQL injection\",\n    msg has_any (\"sleep(\", \"benchmark(\", \"waitfor\", \"pg_sleep(\"), \"Time-based SQL injection\",\n    msg has_any (\"information_schema\", \"database()\", \"version()\", \"user()\"), \"Database enumeration SQL injection\",\n    msg has_any (\"xp_cmdshell\", \"load_file\", \"outfile\", \"dumpfile\"), \"File or command SQL injection\",\n    msg has_any (\"--\", \"%2d%2d\", \"/*\", \"%2f%2a\", \"%23\"), \"SQL comment/operator abuse\",\n    \"Possible SQL injection\"\n)\n| project TimeGenerated, Computer, HostName, ProcessName, Facility, SeverityLevel, SqlInjectionPattern, SyslogMessage",
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "tactics": [
+                    "InitialAccess"
+                ],
+                "techniques": [
+                    "T1190"
+                ],
+                "subTechniques": [],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": false,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT5H",
+                        "matchingMethod": "AllEntities",
+                        "groupByEntities": [],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "AlertPerResult"
+                },
+                "alertDetailsOverride": null,
+                "customDetails": {
+                    "SqlInjectionPattern": "SqlInjectionPattern",
+                    "RawLog": "SyslogMessage",
+                    "Process": "ProcessName",
+                    "Facility": "Facility"
+                },
+                "entityMappings": null,
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}
