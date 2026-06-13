@@ -1,0 +1,158 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workflows_la_block_sqli_source_ip_5min_name": {
+            "defaultValue": "la-block-sqli-source-ip-5min",
+            "type": "String"
+        },
+        "networkSecurityGroups_vm01_nsg_externalid": {
+            "defaultValue": "/subscriptions/b3cc4fec-308c-4486-a587-e97e552ec333/resourceGroups/TestGrp/providers/Microsoft.Network/networkSecurityGroups/vm01-nsg",
+            "type": "String"
+        }
+    },
+    "variables": {},
+    "resources": [
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2017-07-01",
+            "name": "[parameters('workflows_la_block_sqli_source_ip_5min_name')]",
+            "location": "eastus",
+            "identity": {
+                "type": "SystemAssigned"
+            },
+            "properties": {
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "workspaceCustomerId": {
+                            "type": "String"
+                        },
+                        "nsgResourceId": {
+                            "type": "String"
+                        }
+                    },
+                    "triggers": {
+                        "Every_1_minute": {
+                            "recurrence": {
+                                "frequency": "Minute",
+                                "interval": 1
+                            },
+                            "evaluatedRecurrence": {
+                                "frequency": "Minute",
+                                "interval": 1
+                            },
+                            "type": "Recurrence",
+                            "runtimeConfiguration": {
+                                "concurrency": {
+                                    "runs": 1
+                                }
+                            }
+                        }
+                    },
+                    "actions": {
+                        "Query_SQLi_events": {
+                            "runAfter": {},
+                            "type": "Http",
+                            "inputs": {
+                                "method": "POST",
+                                "uri": "@{concat('https://api.loganalytics.io/v1/workspaces/', parameters('workspaceCustomerId'), '/query')}",
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "authentication": {
+                                    "type": "ManagedServiceIdentity",
+                                    "audience": "https://api.loganalytics.io"
+                                },
+                                "body": {
+                                    "timespan": "PT5M",
+                                    "query": "Syslog\n| where TimeGenerated > ago(5m)\n| where ProcessName has \"apache_access\" or Facility == \"local6\"\n| extend msg = tolower(SyslogMessage)\n| where msg has_any (\"%27\", \"'\", \"%22\", \"+or+\", \"%20or%20\", \" or \", \"or1\", \"1=1\", \"%3d\", \"union\", \"%20union%20\", \"select\", \"%20select%20\", \"information_schema\", \"sleep(\", \"benchmark(\", \"waitfor\", \"pg_sleep(\", \"xp_cmdshell\", \"load_file\", \"outfile\", \"dumpfile\", \"concat(\", \"group_concat\", \"database()\", \"version()\", \"user()\", \"--\", \"%2d%2d\", \"/*\", \"%2f%2a\", \"%23\")\n| extend SourceIP = extract(@\"^(\\d{1,3}(?:\\.\\d{1,3}){3})\", 1, SyslogMessage)\n| where isnotempty(SourceIP) and SourceIP != \"127.0.0.1\"\n| summarize Latest=max(TimeGenerated) by SourceIP\n| project SourceIP"
+                                }
+                            }
+                        },
+                        "For_each_source_ip": {
+                            "foreach": "@body('Query_SQLi_events')?['tables']?[0]?['rows']",
+                            "actions": {
+                                "Create_temp_NSG_block": {
+                                    "runAfter": {},
+                                    "type": "Http",
+                                    "inputs": {
+                                        "method": "PUT",
+                                        "uri": "@{concat('https://management.azure.com', parameters('nsgResourceId'), '/securityRules/BlockSQLi-', replace(items('For_each_source_ip')?[0], '.', '-'), '?api-version=2023-09-01')}",
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "authentication": {
+                                            "type": "ManagedServiceIdentity",
+                                            "audience": "https://management.azure.com/"
+                                        },
+                                        "body": {
+                                            "properties": {
+                                                "priority": 200,
+                                                "access": "Deny",
+                                                "direction": "Inbound",
+                                                "protocol": "Tcp",
+                                                "sourceAddressPrefix": "@{items('For_each_source_ip')?[0]}",
+                                                "sourcePortRange": "*",
+                                                "destinationAddressPrefix": "*",
+                                                "destinationPortRange": "80",
+                                                "description": "Temporary 5 minute block created by Sentinel SQL injection Logic App."
+                                            }
+                                        }
+                                    }
+                                },
+                                "Wait_5_minutes": {
+                                    "runAfter": {
+                                        "Create_temp_NSG_block": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Wait",
+                                    "inputs": {
+                                        "interval": {
+                                            "count": 5,
+                                            "unit": "Minute"
+                                        }
+                                    }
+                                },
+                                "Remove_temp_NSG_block": {
+                                    "runAfter": {
+                                        "Wait_5_minutes": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Http",
+                                    "inputs": {
+                                        "method": "DELETE",
+                                        "uri": "@{concat('https://management.azure.com', parameters('nsgResourceId'), '/securityRules/BlockSQLi-', replace(items('For_each_source_ip')?[0], '.', '-'), '?api-version=2023-09-01')}",
+                                        "authentication": {
+                                            "type": "ManagedServiceIdentity",
+                                            "audience": "https://management.azure.com/"
+                                        }
+                                    }
+                                }
+                            },
+                            "runAfter": {
+                                "Query_SQLi_events": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Foreach"
+                        }
+                    },
+                    "outputs": {}
+                },
+                "parameters": {
+                    "workspaceCustomerId": {
+                        "value": "f37d2188-4806-4410-a0c1-42d79475311a"
+                    },
+                    "nsgResourceId": {
+                        "value": "[parameters('networkSecurityGroups_vm01_nsg_externalid')]"
+                    }
+                }
+            }
+        }
+    ]
+}
